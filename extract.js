@@ -1,17 +1,28 @@
 require('dotenv').config();
 const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 const jsforce = require('jsforce');
+const ProgressBar = require('progress');
 
 // Define your Salesforce credentials
-const username = process.env.USERNAME;
-const password = process.env.PASSWORD;
-const loginUrl = process.env.LOGINURL;
+const username = process.env.SFDC_USERNAME;
+const password = process.env.SFDC_PASSWORD;
+const loginUrl = process.env.SFDC_LOGINURL;
 
-console.log(loginUrl);
+// Create a connection to Salesforce
+const conn = new jsforce.Connection({
+    loginUrl : loginUrl,
+    version : '57.0'  // Set your desired API version here
+});
 
-// Define the CSV writer
-const csvWriter = createCsvWriter({
-    path: 'out.csv',
+let records = [];
+let totalCount = 0;
+let totalSize = 0;
+let bar = null;
+
+// Function to create a CSV writer with a new file path
+function createWriter(totalCount) {
+  return createCsvWriter({
+    path: `out-${totalCount-records.length+1}-${totalCount}.csv`,
     header: [
         {id: 'RefMetadataComponentId', title: 'RefMetadataComponentId'},
         {id: 'RefMetadataComponentName', title: 'RefMetadataComponentName'},
@@ -20,13 +31,46 @@ const csvWriter = createCsvWriter({
         {id: 'MetadataComponentName', title: 'MetadataComponentName'},
         {id: 'MetadataComponentType', title: 'MetadataComponentType'},
     ]
-});
+  });
+}
 
-// Create a connection to Salesforce
-const conn = new jsforce.Connection({
-    loginUrl : loginUrl,
-    version : '57.0'  // Set your desired API version here
-});
+// Define a function to fetch the records
+const fetchRecords = (queryUrl, isMore) => {
+  const fetchFunc = isMore ? 'queryMore' : 'query';
+
+  conn.tooling[fetchFunc](queryUrl, function(err, result) {
+    if (err) { return console.error(err); }
+
+    if (!totalSize) {
+      totalSize = result.totalSize;
+      bar = new ProgressBar('[:bar] :percent :etas', { total: totalSize, width: 40 });
+    }
+
+    records.push(...result.records);
+    totalCount += result.records.length;
+
+    // Update the progress bar
+    bar.tick(result.records.length);
+
+    if (records.length >= 50000 || result.done) {
+      const csvWriter = createWriter(totalCount);
+      csvWriter
+        .writeRecords(records)
+        .then(() => console.log('The CSV file was written successfully'))
+        .catch(console.error);
+
+      // Reset the records array
+      records = [];
+    }
+
+    if (!result.done) {
+      console.log("Fetching next records from URL : " + result.nextRecordsUrl);
+      fetchRecords(result.nextRecordsUrl, true);
+    } else {
+      console.log("Fetching done");
+    }
+  });
+};
 
 // Login to Salesforce
 conn.login(username, password, function(err, userInfo) {
@@ -35,24 +79,6 @@ conn.login(username, password, function(err, userInfo) {
     // Define the SOQL query
     const query = "SELECT Id, RefMetadataComponentId, RefMetadataComponentName, RefMetadataComponentType, MetadataComponentId, MetadataComponentName, MetadataComponentType FROM MetadataComponentDependency";
 
-    // Execute the query and handle pagination
-    const records = [];
-    const queryResult = conn.tooling.query(query);
-    queryResult.on("record", function(record) {
-        records.push(record);
-        console.log(record);
-    });
-    queryResult.on("end", function() {
-        console.log("Total records fetched : " + queryResult.totalFetched);
-
-        // Write the records to the CSV file
-        csvWriter.writeRecords(records)
-            .then(() => {
-                console.log('...Done');
-            });
-    });
-    queryResult.on("error", function(err) {
-        console.error(err);
-    });
-    queryResult.run({ autoFetch : true, maxFetch : 500000 }); // Adjust maxFetch as needed
+    fetchRecords(query, false);
 });
+
