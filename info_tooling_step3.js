@@ -3,6 +3,7 @@ const jsforce = require('jsforce');
 const fs = require('fs');
 const ProgressBar = require('progress');
 const path = require('path');
+const csv = require('csv-parser');  // csv-parser library
 
 // Define your Salesforce credentials
 const username = process.env.SFDC_USERNAME;
@@ -21,7 +22,12 @@ function appendCSVLine(file, data) {
 
 async function main() {
   try {
-    await conn.login(username, password);
+    try {
+        await conn.login(username, password);
+    } catch (e) {
+        fs.appendFileSync('dependencies_error.csv', `Error logging in: ${e.message}\n`);
+        throw e;  // rethrow the error after logging
+    }
 
     // Get a list of CSV files in 'sobjects' subfolder
     const files = fs.readdirSync('sobjects').filter(file => file.endsWith('.csv'));
@@ -52,9 +58,10 @@ async function main() {
 
       const records = [];
       fs.createReadStream(path.join('sobjects', file))
+        .pipe(csv())
         .on('data', row => records.push(row))
-        .on('end', async (rowCount) => {
-          console.log(`Read ${rowCount} rows from ${file}`);
+        .on('end', async () => {
+          console.log(`Read ${records.length} rows from ${file}`);
 
           for (let record of records) {
             // Ignore Id "000000000000000AAA"
@@ -67,6 +74,7 @@ async function main() {
                   const dependencies = await conn.tooling.query(`SELECT MetadataComponentId, MetadataComponentName, MetadataComponentType, RefMetadataComponentId, RefMetadataComponentName, RefMetadataComponentType FROM MetadataComponentDependency WHERE MetadataComponentId = '${record.Id}'`);
 
                   dependencies.records.forEach(dependency => {
+                    console.log(JSON.stringify(dependency));
                     appendCSVLine(dependenciesFile, dependency);
                   });
                 } catch (e) {
